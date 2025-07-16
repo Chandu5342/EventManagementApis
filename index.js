@@ -4,6 +4,11 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 
+
+const User = require('./models/User');
+const Event = require('./models/Event.');
+const Registration = require('./models/Registration');
+
 const eventRoutes = require('./routes/eventRoutes');
 const sequelize   = require('./config/db');
 

@@ -1,5 +1,7 @@
 let events=[]
 const Event = require('../models/Event.');
+const User = require('../models/User');
+const Registration = require('../models/Registration');
 
 exports.createEvent=async (req,res)=>{
      const {title,location,datetime,capacity}=req.body;
@@ -41,97 +43,142 @@ exports.getEventDetails=async (req,res)=>{
   }
 };
 
-let Users=[]
-let registerUsers=[];
 
-exports.Uregistration = (req, res) => {
+
+
+exports.Uregistration = async (req, res) => {
   const { userid, username, eventid } = req.body;
 
-  const event = events.find(e => e.id === eventid);
-  if (!event) {
-    return res.status(400).json({ error: 'Event does not exist' });
-  }
-
-  const now = new Date();
-  const eventTime = new Date(event.datetime);
-  if (eventTime < now) {
-    return res.status(400).json({ error: 'Event has already expired' });
-  }
-
-  // Check if the user is already registered
-  const isDup = event.registerUsers.includes(userid);
-  if (isDup) {
-    return res.status(400).json({ error: 'User already registered for this event' });
-  }
-
-  event.registerUsers.push(userid);
-
-  registerUsers.push({ userid, eventid });
-
-  if (!Users.find(u => u.id === userid)) {
-    Users.push({ id: userid, name: username });
-  }
-
-  return res.status(200).json({ message: 'User registered successfully' });
-};
-
-
-
-exports.UDelete=(req,res)=>{
-     const {userid,eventid}=req.body;
-     const event=events.find(e=>e.id===eventid);
-     if(!event){return res.status(400).json({error:'no event exist'})};
-     const regindex=registerUsers.findIndex(r=>r.userid===userid && r.eventid===eventid);
-     if(regindex==-1)
-    {
-        return res.status(400).json({error:'user is not register for this event'});
+  try {
+    //  Check if event exists
+    const event = await Event.findByPk(eventid);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
     }
 
-    registerUsers.splice(regindex,1);
-    event.registerUsers=event.registerUsers.filter(id=>id!=userid);
-    return res.status(200).json({message:'delted succussfully'});
-
-};
-
-
-exports.getUpcomingEvents = (req, res) => {
-  const now = new Date();
-
-  // Filter only future events
-  const upcoming = events.filter(e => new Date(e.datetime) > now);
-
-  // Sort: first by date, then by location
-  upcoming.sort((a, b) => {
-    const dateA = new Date(a.datetime);
-    const dateB = new Date(b.datetime);
-
-    if (dateA.getTime() !== dateB.getTime()) {
-      return dateA - dateB;
-    } else {
-      return a.location.localeCompare(b.location);
+    //  Check if event is expired
+    const now = new Date();
+    const eventTime = new Date(event.datetime);
+    if (eventTime < now) {
+      return res.status(400).json({ error: 'Event  expired' });
     }
-  });
 
-  return res.json(upcoming);
+    //  Create user if not exists
+    let user = await User.findByPk(userid);
+    if (!user) {
+      user = await User.create({ id: userid, name: username });
+    }
+
+    //  Check for duplicate registration
+    const alreadyRegistered = await Registration.findOne({
+      where: { UserId: userid, EventId: eventid }
+    });
+
+    if (alreadyRegistered) {
+      return res.status(400).json({ error: 'User already registered for this event' });
+    }
+
+    //  Check capacity
+    const registrationCount = await Registration.count({
+      where: { EventId: eventid }
+    });
+
+    if (registrationCount >= event.capacity) {
+      return res.status(400).json({ error: 'Event is full' });
+    }
+
+    //  Create registration
+    await Registration.create({ UserId: userid, EventId: eventid });
+
+    return res.status(200).json({ message: 'User registered successfully' });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 };
 
 
-exports.getEventStats = (req, res) => {
-  const eventId = parseInt(req.params.id);
-  const event = events.find(e => e.id === eventId);
 
-  if (!event) {
-    return res.status(404).json({ error: 'Event not found' });
+
+exports.UDelete=async (req,res)=>{
+    const { userid, eventid } = req.body;
+
+  try {
+    // does the registration exist
+    const registration = await Registration.findOne({
+      where: { UserId: userid, EventId: eventid }
+    });
+
+    if (!registration) {
+      return res
+        .status(400)
+        .json({ error: 'User is not registered  this event' });
+    }
+
+    // delete the row
+    await registration.destroy();
+    return res.json({ message: 'Registration cancelled ' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Internal  error' });
   }
 
-  const totalRegistered = event.registeredUsers.length;
-  const remaining = event.capacity - totalRegistered;
-  const percentFilled = ((totalRegistered / event.capacity) * 100).toFixed(2);
+};
 
-  return res.json({
-    eventId: event.id,
-    totalRegistered,
-    remaining,
-    percentFilled: `${percentFilled}%`
-  });
+
+exports.getUpcomingEvents = async (req, res) => {
+  const now = new Date();
+
+  try {
+    const events = await Event.findAll({
+      where: {
+        datetime: {
+          [require('sequelize').Op.gt]: now
+        }
+      },
+      order: [
+        ['datetime', 'ASC'],
+        ['location', 'ASC']
+      ]
+    });
+
+    return res.status(200).json(events);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+
+const { Op } = require('sequelize');
+
+exports.getEventStats = async (req, res) => {
+  const eventId = parseInt(req.params.id, 10);
+
+  try {
+    //   Get the event first
+    const event = await Event.findByPk(eventId);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    //  Count current registrations
+    const totalRegistered = await Registration.count({
+      where: { EventId: eventId }
+    });
+
+    const remaining     = event.capacity - totalRegistered;
+    const percentFilled = ((totalRegistered / event.capacity) * 100).toFixed(2);
+
+    return res.json({
+      eventId: event.id,
+      totalRegistered,
+      remaining,
+      percentFilled: `${percentFilled}%`
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 };
